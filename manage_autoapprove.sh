@@ -25,6 +25,13 @@ function install() {
     gh auth login
   fi
 
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "[!] gh is not installed or not on PATH. Install GitHub CLI first."
+    exit 1
+  fi
+
+  launchctl bootout gui/$(id -u) "$LABEL" 2>/dev/null || true
+
   echo "[*] Creating launch agent plist at $PLIST_PATH..."
   cat > "$PLIST_PATH" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -42,6 +49,11 @@ function install() {
   <integer>60</integer>
   <key>RunAtLoad</key>
   <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>StandardOutPath</key>
   <string>$LOGFILE</string>
   <key>StandardErrorPath</key>
