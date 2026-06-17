@@ -33,6 +33,36 @@ log "Starting auto_approve.sh"
 REPO="pantheon-systems/tf-agcdn"
 USER_LOGIN=$("$GH_BIN" api user --jq .login)
 
+# Only these authors are eligible for auto-approval
+INCLUDED_AUTHORS=(
+  "dficker"
+  "jahzlariosa"
+  "careydayrit"
+  "danreb"
+  "dqlopez"
+  "dylanbaumann"
+  "rainercedric23"
+  "michaelvgonzaga"
+  "ersonjn"
+  "gagandeeply"
+  "aminulpantheon"
+  "shelleycabarrubias"
+  "khairulanam-pantheon"
+  "sharlenerozario8"
+  "jinnueljosevitug"
+  "tristanhipolito"
+  "arving-pantheon"
+  "jrannelv"
+  "Brix-Adrian-Cruz"
+  "ravenloveriel"
+  "elsamson"
+  "v0jpantheon"
+  "kirrrk"
+  "rogeliocastillojr"
+  "mateuszklorek"
+  "bogusz-gorkiewicz"
+)
+
 # Build candidate PR list (not authored by you and newer than 5 days)
 prs=$("$GH_BIN" pr list \
       --repo "$REPO" \
@@ -49,6 +79,21 @@ for pr in $prs; do
   # Skip if PR is merged or closed (just to be safe)
   state=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json state --jq .state)
   [[ "$state" != "OPEN" ]] && log "Skipping PR #$pr (state: $state)" && continue
+
+  author=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json author --jq '.author.login')
+
+  included=false
+  for allowed in "${INCLUDED_AUTHORS[@]}"; do
+    if [[ "$author" == "$allowed" ]]; then
+      included=true
+      break
+    fi
+  done
+
+  if [[ "$included" != true ]]; then
+    log "Skipping PR #$pr (author not in include list: $author)"
+    continue
+  fi
 
   # Fetch all reviews
   reviews=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json reviews --jq '.reviews')
