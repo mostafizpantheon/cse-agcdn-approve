@@ -67,14 +67,34 @@ PLAN_ENVIRONMENT="pr-plan"
 
 # Approve pending "pr-plan" environment deployments for a PR's current head SHA.
 # Only called for allowlisted authors: the plan runs PR code with credentials.
+#
+# Safeguards (the plan job holds credentials and executes PR code):
+#   - PR must come from a branch in $REPO itself, never a fork
+#   - run must be bound to this PR: same head SHA, branch, and PR number
+#   - run's triggering actor (the pusher) must also be on the allowlist
 approve_pr_plan() {
-  local pr="$1" head_sha run_id env_ids id runs
-  head_sha=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json headRefOid --jq .headRefOid) || return 0
-  [[ -z "$head_sha" ]] && return 0
+  local pr="$1" pr_json head_sha head_ref cross allowlist_json run_id env_ids id runs
+  pr_json=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json headRefOid,headRefName,isCrossRepository) || return 0
+  head_sha=$(echo "$pr_json" | "$JQ_BIN" -r .headRefOid)
+  head_ref=$(echo "$pr_json" | "$JQ_BIN" -r .headRefName)
+  cross=$(echo "$pr_json" | "$JQ_BIN" -r .isCrossRepository)
+  [[ -z "$head_sha" || "$head_sha" == "null" ]] && return 0
+  if [[ "$cross" != "false" ]]; then
+    log "Skipping pr-plan approval for PR #$pr (head is from a fork)"
+    return 0
+  fi
 
-  # Runs awaiting approval for exactly this head SHA
+  allowlist_json=$(printf '%s\n' "${INCLUDED_AUTHORS[@]}" | "$JQ_BIN" -R . | "$JQ_BIN" -s .)
+
+  # Runs awaiting approval for exactly this head SHA, bound to this PR
   runs=$("$GH_BIN" api "repos/$REPO/actions/runs?status=waiting&head_sha=$head_sha&per_page=100" \
-          --jq '.workflow_runs[] | select(.event == "pull_request" or .event == "pull_request_target") | .id') || return 0
+          | "$JQ_BIN" -r --arg repo "$REPO" --arg ref "$head_ref" --argjson pr "$pr" --argjson allow "$allowlist_json" '
+              .workflow_runs[]
+              | select(.event == "pull_request")
+              | select(.head_repository.full_name == $repo and .head_branch == $ref)
+              | select([.pull_requests[]?.number] | index($pr))
+              | select(.triggering_actor.login as $a | $allow | index($a))
+              | .id') || return 0
 
   for run_id in $runs; do
     env_ids=$("$GH_BIN" api "repos/$REPO/actions/runs/$run_id/pending_deployments" \
