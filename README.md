@@ -15,6 +15,23 @@ The `auto_approve.sh` script will automatically approve a pull request if:
 - Fewer than 2 distinct reviewers have approved it
 - Your latest review is not already an approval
 
+## pr-plan Deployment Approval
+
+For PRs from authors in `INCLUDED_AUTHORS`, the script also approves pending
+`pr-plan` environment deployments (the Terraform plan gate) on the PR's current
+head SHA. It only touches runs in `waiting` status for `pull_request` events, and
+only when you are an allowed reviewer of the environment. Because the plan runs PR
+code with credentials, it additionally requires that the PR is not from a fork, the
+run is bound to that PR (same head SHA, branch, and PR number), and that the PR
+author, the run's triggering actor, and the author of every non-merge commit on the
+PR are all trusted. Trusted = `INCLUDED_AUTHORS` plus members of the
+`implementation-team` and `technical-support` teams (`PLAN_TRUSTED_TEAMS`, fetched
+each run; needs `read:org` on your `gh` token). Bot-triggered runs, e.g.
+`agcdn-ci-automerge[bot]`, are not auto-approved. Review approval still uses only
+`INCLUDED_AUTHORS`. The pr-plan step is independent of
+the review-approval rules above, so it runs even if you already approved the PR.
+A new push creates a new SHA and a new gate, which is approved on the next run.
+
 ## Installation
 
 1. Clone or download the scripts `auto_approve.sh` and `manage_autoapprove.sh`
