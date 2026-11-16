@@ -64,31 +64,66 @@ INCLUDED_AUTHORS=(
 )
 
 PLAN_ENVIRONMENT="pr-plan"
+ORG="${REPO%%/*}"
+
+# Teams whose members are trusted for pr-plan approval (in addition to INCLUDED_AUTHORS)
+PLAN_TRUSTED_TEAMS=(
+  "implementation-team"
+  "technical-support"
+)
+
+# Trusted logins for pr-plan: INCLUDED_AUTHORS + members of PLAN_TRUSTED_TEAMS.
+# If a team lookup fails, that team is skipped (narrower trust, fail closed).
+trusted_plan_logins=("${INCLUDED_AUTHORS[@]}")
+for team in "${PLAN_TRUSTED_TEAMS[@]}"; do
+  if members=$("$GH_BIN" api --paginate "orgs/$ORG/teams/$team/members" --jq '.[].login'); then
+    while IFS= read -r m; do
+      [[ -n "$m" ]] && trusted_plan_logins+=("$m")
+    done <<< "$members"
+  else
+    log "Could not list members of team $team; skipping it for pr-plan trust"
+  fi
+done
+TRUSTED_PLAN_JSON=$(printf '%s\n' "${trusted_plan_logins[@]}" | "$JQ_BIN" -R . | "$JQ_BIN" -s 'unique')
 
 # Approve pending "pr-plan" environment deployments for a PR's current head SHA.
-# Only called for allowlisted authors: the plan runs PR code with credentials.
 #
 # Safeguards (the plan job holds credentials and executes PR code):
+#   - PR author must be trusted (INCLUDED_AUTHORS or a PLAN_TRUSTED_TEAMS member)
 #   - PR must come from a branch in $REPO itself, never a fork
 #   - run must be bound to this PR: same head SHA, branch, and PR number
-#   - run's triggering actor (the pusher) must also be on the allowlist
+#   - run's triggering actor (the pusher) must also be trusted
 approve_pr_plan() {
-  local pr="$1" pr_json head_sha head_ref cross allowlist_json run_id env_ids id runs
-  pr_json=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json headRefOid,headRefName,isCrossRepository) || return 0
+  local pr="$1" pr_json head_sha head_ref cross author run_id env_ids id runs untrusted
+  pr_json=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json headRefOid,headRefName,isCrossRepository,author) || return 0
   head_sha=$(echo "$pr_json" | "$JQ_BIN" -r .headRefOid)
   head_ref=$(echo "$pr_json" | "$JQ_BIN" -r .headRefName)
   cross=$(echo "$pr_json" | "$JQ_BIN" -r .isCrossRepository)
+  author=$(echo "$pr_json" | "$JQ_BIN" -r .author.login)
   [[ -z "$head_sha" || "$head_sha" == "null" ]] && return 0
   if [[ "$cross" != "false" ]]; then
     log "Skipping pr-plan approval for PR #$pr (head is from a fork)"
     return 0
   fi
+  if ! echo "$TRUSTED_PLAN_JSON" | "$JQ_BIN" -e --arg a "$author" 'index($a)' >/dev/null; then
+    log "Skipping pr-plan approval for PR #$pr (author not trusted: $author)"
+    return 0
+  fi
 
-  allowlist_json=$(printf '%s\n' "${INCLUDED_AUTHORS[@]}" | "$JQ_BIN" -R . | "$JQ_BIN" -s .)
+  # Every non-merge commit on the PR must be authored by a trusted login, so a
+  # trusted PR author can't be used to launder someone else's code into the plan.
+  # (Merge commits are ignored: their content comes from the base branch.)
+  untrusted=$("$GH_BIN" api --paginate "repos/$REPO/pulls/$pr/commits" \
+                --jq '.[] | select((.parents | length) == 1) | (.author.login // "unknown")' \
+              | sort -u | "$JQ_BIN" -R . | "$JQ_BIN" -s --argjson t "$TRUSTED_PLAN_JSON" '[.[] | select(. as $a | $t | index($a) | not)] | join(",")' -r) || return 0
+  if [[ -n "$untrusted" ]]; then
+    log "Skipping pr-plan approval for PR #$pr (commits by untrusted authors: $untrusted)"
+    return 0
+  fi
 
   # Runs awaiting approval for exactly this head SHA, bound to this PR
   runs=$("$GH_BIN" api "repos/$REPO/actions/runs?status=waiting&head_sha=$head_sha&per_page=100" \
-          | "$JQ_BIN" -r --arg repo "$REPO" --arg ref "$head_ref" --argjson pr "$pr" --argjson allow "$allowlist_json" '
+          | "$JQ_BIN" -r --arg repo "$REPO" --arg ref "$head_ref" --argjson pr "$pr" --argjson allow "$TRUSTED_PLAN_JSON" '
               .workflow_runs[]
               | select(.event == "pull_request")
               | select(.head_repository.full_name == $repo and .head_branch == $ref)
@@ -130,6 +165,9 @@ for pr in $prs; do
 
   author=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json author --jq '.author.login')
 
+  # Release the pr-plan gate for trusted authors/teams (independent of review state below)
+  approve_pr_plan "$pr"
+
   included=false
   for allowed in "${INCLUDED_AUTHORS[@]}"; do
     if [[ "$author" == "$allowed" ]]; then
@@ -142,9 +180,6 @@ for pr in $prs; do
     log "Skipping PR #$pr (author not in include list: $author)"
     continue
   fi
-
-  # Release the pr-plan gate (independent of review state below)
-  approve_pr_plan "$pr"
 
   # Fetch all reviews
   reviews=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json reviews --jq '.reviews')
