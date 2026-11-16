@@ -66,7 +66,7 @@ INCLUDED_AUTHORS=(
 PLAN_ENVIRONMENT="pr-plan"
 ORG="${REPO%%/*}"
 
-# Teams whose members are trusted for pr-plan approval (in addition to INCLUDED_AUTHORS)
+# Teams whose members are trusted for review and pr-plan approval (in addition to INCLUDED_AUTHORS)
 PLAN_TRUSTED_TEAMS=(
   "implementation-team"
   "technical-support"
@@ -190,16 +190,14 @@ for pr in $prs; do
   # Release the pr-plan gate for trusted authors/teams (independent of review state below)
   approve_pr_plan "$pr"
 
+  # Eligible authors: INCLUDED_AUTHORS + members of PLAN_TRUSTED_TEAMS
   included=false
-  for allowed in "${INCLUDED_AUTHORS[@]}"; do
-    if [[ "$author" == "$allowed" ]]; then
-      included=true
-      break
-    fi
-  done
+  if echo "$TRUSTED_PLAN_JSON" | "$JQ_BIN" -e --arg a "$author" 'index($a)' >/dev/null; then
+    included=true
+  fi
 
   if [[ "$included" != true ]]; then
-    log "Skipping PR #$pr (author not in include list: $author)"
+    log "Skipping PR #$pr (author not in include list or trusted teams: $author)"
     continue
   fi
 
