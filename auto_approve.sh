@@ -113,9 +113,24 @@ approve_pr_plan() {
   # Every non-merge commit on the PR must be authored by a trusted login, so a
   # trusted PR author can't be used to launder someone else's code into the plan.
   # (Merge commits are ignored: their content comes from the base branch.)
-  untrusted=$("$GH_BIN" api --paginate "repos/$REPO/pulls/$pr/commits" \
-                --jq '.[] | select((.parents | length) == 1) | (.author.login // "unknown")' \
-              | sort -u | "$JQ_BIN" -R . | "$JQ_BIN" -s --argjson t "$TRUSTED_PLAN_JSON" '[.[] | select(. as $a | $t | index($a) | not)] | join(",")' -r) || return 0
+  # The commits API caps at 250 per PR, so fail closed at that size. Any API or
+  # parsing failure also skips approval rather than approving.
+  local commits_json commit_count
+  commits_json=$("$GH_BIN" api --paginate "repos/$REPO/pulls/$pr/commits" | "$JQ_BIN" -s 'add // []') || {
+    log "Skipping pr-plan approval for PR #$pr (could not list commits)"
+    return 0
+  }
+  commit_count=$(echo "$commits_json" | "$JQ_BIN" 'length') || return 0
+  if [[ -z "$commit_count" || "$commit_count" -eq 0 || "$commit_count" -ge 250 ]]; then
+    log "Skipping pr-plan approval for PR #$pr (commit count unusable: ${commit_count:-?})"
+    return 0
+  fi
+  untrusted=$(echo "$commits_json" | "$JQ_BIN" -r --argjson t "$TRUSTED_PLAN_JSON" '
+      [.[] | select((.parents | length) == 1) | (.author.login // "unknown")]
+      | unique | map(select(. as $a | $t | index($a) | not)) | join(",")') || {
+    log "Skipping pr-plan approval for PR #$pr (could not evaluate commit authors)"
+    return 0
+  }
   if [[ -n "$untrusted" ]]; then
     log "Skipping pr-plan approval for PR #$pr (commits by untrusted authors: $untrusted)"
     return 0
