@@ -63,6 +63,34 @@ INCLUDED_AUTHORS=(
   "bogusz-gorkiewicz"
 )
 
+PLAN_ENVIRONMENT="pr-plan"
+
+# Approve pending "pr-plan" environment deployments for a PR's current head SHA.
+# Only called for allowlisted authors: the plan runs PR code with credentials.
+approve_pr_plan() {
+  local pr="$1" head_sha run_id env_ids id runs
+  head_sha=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json headRefOid --jq .headRefOid) || return 0
+  [[ -z "$head_sha" ]] && return 0
+
+  # Runs awaiting approval for exactly this head SHA
+  runs=$("$GH_BIN" api "repos/$REPO/actions/runs?status=waiting&head_sha=$head_sha&per_page=100" \
+          --jq '.workflow_runs[] | select(.event == "pull_request" or .event == "pull_request_target") | .id') || return 0
+
+  for run_id in $runs; do
+    env_ids=$("$GH_BIN" api "repos/$REPO/actions/runs/$run_id/pending_deployments" \
+              --jq '.[] | select(.environment.name == "'"$PLAN_ENVIRONMENT"'" and .current_user_can_approve == true) | .environment.id') || continue
+    for id in $env_ids; do
+      if "$GH_BIN" api -X POST "repos/$REPO/actions/runs/$run_id/pending_deployments" \
+           -F "environment_ids[]=$id" -f state=approved \
+           -f comment="Auto approved using cse-agcdn-approve" >/dev/null; then
+        log "Approved $PLAN_ENVIRONMENT deployment for PR #$pr (run $run_id, sha ${head_sha:0:7})"
+      else
+        log "Failed to approve $PLAN_ENVIRONMENT deployment for PR #$pr (run $run_id)"
+      fi
+    done
+  done
+}
+
 # Build candidate PR list (not authored by you and newer than 5 days)
 prs=$("$GH_BIN" pr list \
       --repo "$REPO" \
@@ -94,6 +122,9 @@ for pr in $prs; do
     log "Skipping PR #$pr (author not in include list: $author)"
     continue
   fi
+
+  # Release the pr-plan gate (independent of review state below)
+  approve_pr_plan "$pr"
 
   # Fetch all reviews
   reviews=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json reviews --jq '.reviews')

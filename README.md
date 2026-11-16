@@ -15,6 +15,15 @@ The `auto_approve.sh` script will automatically approve a pull request if:
 - Fewer than 2 distinct reviewers have approved it
 - Your latest review is not already an approval
 
+## pr-plan Deployment Approval
+
+For PRs from authors in `INCLUDED_AUTHORS`, the script also approves pending
+`pr-plan` environment deployments (the Terraform plan gate) on the PR's current
+head SHA. It only touches runs in `waiting` status for `pull_request` events, and
+only when you are an allowed reviewer of the environment. This is independent of
+the review-approval rules above, so it runs even if you already approved the PR.
+A new push creates a new SHA and a new gate, which is approved on the next run.
+
 ## Installation
 
 1. Clone or download the scripts `auto_approve.sh` and `manage_autoapprove.sh`
