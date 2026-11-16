@@ -94,7 +94,7 @@ TRUSTED_PLAN_JSON=$(printf '%s\n' "${trusted_plan_logins[@]}" | "$JQ_BIN" -R . |
 #   - run must be bound to this PR: same head SHA, branch, and PR number
 #   - run's triggering actor (the pusher) must also be trusted
 approve_pr_plan() {
-  local pr="$1" pr_json head_sha head_ref cross author run_id env_ids id runs untrusted
+  local pr="$1" pr_json head_sha head_ref cross author run_id env_ids id runs untrusted current_sha
   pr_json=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json headRefOid,headRefName,isCrossRepository,author) || return 0
   head_sha=$(echo "$pr_json" | "$JQ_BIN" -r .headRefOid)
   head_ref=$(echo "$pr_json" | "$JQ_BIN" -r .headRefName)
@@ -112,7 +112,8 @@ approve_pr_plan() {
 
   # Every non-merge commit on the PR must be authored by a trusted login, so a
   # trusted PR author can't be used to launder someone else's code into the plan.
-  # (Merge commits are ignored: their content comes from the base branch.)
+  # Merge commits count too; the PR commit list excludes commits already in the base,
+  # so a merge of main shows up only as the merge commit, authored by the merger.
   # The commits API caps at 250 per PR, so fail closed at that size. Any API or
   # parsing failure also skips approval rather than approving.
   local commits_json commit_count
@@ -126,7 +127,7 @@ approve_pr_plan() {
     return 0
   fi
   untrusted=$(echo "$commits_json" | "$JQ_BIN" -r --argjson t "$TRUSTED_PLAN_JSON" '
-      [.[] | select((.parents | length) == 1) | (.author.login // "unknown")]
+      [.[] | (.author.login // "unknown")]
       | unique | map(select(. as $a | $t | index($a) | not)) | join(",")') || {
     log "Skipping pr-plan approval for PR #$pr (could not evaluate commit authors)"
     return 0
@@ -150,6 +151,12 @@ approve_pr_plan() {
     env_ids=$("$GH_BIN" api "repos/$REPO/actions/runs/$run_id/pending_deployments" \
               --jq '.[] | select(.environment.name == "'"$PLAN_ENVIRONMENT"'" and .current_user_can_approve == true) | .environment.id') || continue
     for id in $env_ids; do
+      # TOCTOU guard: the checks above ran against $head_sha; abort if the PR moved.
+      current_sha=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json headRefOid --jq .headRefOid) || return 0
+      if [[ "$current_sha" != "$head_sha" ]]; then
+        log "Skipping pr-plan approval for PR #$pr (head moved ${head_sha:0:7} -> ${current_sha:0:7} during checks)"
+        return 0
+      fi
       if "$GH_BIN" api -X POST "repos/$REPO/actions/runs/$run_id/pending_deployments" \
            -F "environment_ids[]=$id" -f state=approved \
            -f comment="Auto approved using cse-agcdn-approve" >/dev/null; then
