@@ -33,7 +33,8 @@ log "Starting auto_approve.sh"
 REPO="pantheon-systems/tf-agcdn"
 USER_LOGIN=$("$GH_BIN" api user --jq .login)
 
-# Only these authors are eligible for auto-approval
+# Trusted authors for pr-plan approval only (the plan job runs PR code with credentials).
+# PR review approval is not author-filtered.
 INCLUDED_AUTHORS=(
   "dficker"
   "jahzlariosa"
@@ -185,23 +186,8 @@ for pr in $prs; do
   state=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json state --jq .state)
   [[ "$state" != "OPEN" ]] && log "Skipping PR #$pr (state: $state)" && continue
 
-  author=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json author --jq '.author.login')
-
   # Release the pr-plan gate for trusted authors/teams (independent of review state below)
   approve_pr_plan "$pr"
-
-  included=false
-  for allowed in "${INCLUDED_AUTHORS[@]}"; do
-    if [[ "$author" == "$allowed" ]]; then
-      included=true
-      break
-    fi
-  done
-
-  if [[ "$included" != true ]]; then
-    log "Skipping PR #$pr (author not in include list: $author)"
-    continue
-  fi
 
   # Fetch all reviews
   reviews=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json reviews --jq '.reviews')
