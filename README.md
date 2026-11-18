@@ -11,6 +11,7 @@ The `auto_approve.sh` script will automatically approve a pull request if:
 
 - It is labeled with one of the labels defined in the script (e.g., `add-site`)
 - You are not the author (any other author is eligible; there is no author allowlist)
+- The PR head is in this repo, not a fork
 - It was created in the last 5 days
 - Fewer than 2 distinct reviewers have approved it
 - Your latest review is not already an approval
@@ -27,7 +28,7 @@ author, the run's triggering actor, and the author of every non-merge commit on 
 PR are all trusted. Trusted = `INCLUDED_AUTHORS` plus members of the
 `implementation-team` and `technical-support` teams (`PLAN_TRUSTED_TEAMS`, fetched
 each run; needs `read:org` on your `gh` token). Bot-triggered runs, e.g.
-`agcdn-ci-automerge[bot]`, are not auto-approved. Review approval is not author-filtered.
+`agcdn-ci-automerge[bot]`, are not auto-approved. Review approval is not author-filtered, but it skips fork PRs and pins the approval to the head SHA it inspected (re-checked just before approving).
 The pr-plan step is independent of
 the review-approval rules above, so it runs even if you already approved the PR.
 A new push creates a new SHA and a new gate, which is approved on the next run.

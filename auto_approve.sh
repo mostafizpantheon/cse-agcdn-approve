@@ -189,6 +189,19 @@ for pr in $prs; do
   # Release the pr-plan gate for trusted authors/teams (independent of review state below)
   approve_pr_plan "$pr"
 
+  # Review approval is not author-filtered, but never approve fork PRs, and bind
+  # the approval to the head SHA inspected here. Fail closed on any lookup error.
+  pr_meta=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json headRefOid,isCrossRepository) || {
+    log "Skipping PR #$pr (could not read PR head)"
+    continue
+  }
+  review_sha=$(echo "$pr_meta" | "$JQ_BIN" -r '.headRefOid // empty')
+  review_cross=$(echo "$pr_meta" | "$JQ_BIN" -r '.isCrossRepository')
+  if [[ -z "$review_sha" || "$review_cross" != "false" ]]; then
+    log "Skipping PR #$pr (head from a fork or head SHA unavailable)"
+    continue
+  fi
+
   # Fetch all reviews
   reviews=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json reviews --jq '.reviews')
 
@@ -213,10 +226,19 @@ for pr in $prs; do
     continue
   fi
 
-  # Submit your approval
-  "$GH_BIN" pr review "$pr" \
-    --repo "$REPO" \
-    --approve \
-    --body "Auto approved using cse-agcdn-approve"
-  log "Approved PR #$pr"
+  # TOCTOU guard: abort if the PR head moved since it was inspected
+  current_sha=$("$GH_BIN" pr view "$pr" --repo "$REPO" --json headRefOid --jq .headRefOid) || continue
+  if [[ "$current_sha" != "$review_sha" ]]; then
+    log "Skipping PR #$pr (head moved ${review_sha:0:7} -> ${current_sha:0:7} before approval)"
+    continue
+  fi
+
+  # Submit approval pinned to the inspected commit
+  if "$GH_BIN" api -X POST "repos/$REPO/pulls/$pr/reviews" \
+       -f commit_id="$review_sha" -f event=APPROVE \
+       -f body="Auto approved using cse-agcdn-approve" >/dev/null; then
+    log "Approved PR #$pr (sha ${review_sha:0:7})"
+  else
+    log "Failed to approve PR #$pr (sha ${review_sha:0:7})"
+  fi
 done
